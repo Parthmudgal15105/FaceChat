@@ -11,7 +11,7 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: process.env.NODE_ENV === 'production' 
-      ? ["https://your-frontend-url.vercel.app"] 
+      ? ["https://facechatfrontend.vercel.app"] 
       : ["http://localhost:5173", "http://localhost:5174"],
     methods: ["GET", "POST"],
     credentials: true
