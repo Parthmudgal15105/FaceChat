@@ -1,5 +1,10 @@
 {
   "version": 2,
+  "functions": {
+    "dist/index.js": {
+      "maxDuration": 30
+    }
+  },
   "builds": [
     {
       "src": "dist/index.js",

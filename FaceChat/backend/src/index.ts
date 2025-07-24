@@ -1,6 +1,5 @@
 import { Socket } from "socket.io";
 import http from "http";
-
 import express from 'express';
 import { Server } from 'socket.io';
 import { UserManager } from "./managers/UserManger";
@@ -11,11 +10,12 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: process.env.NODE_ENV === 'production' 
-      ? ["https://facechatfrontend.vercel.app/"] 
+      ? ["https://facechatfrontend.vercel.app"] 
       : ["http://localhost:5173", "http://localhost:5174"],
     methods: ["GET", "POST"],
     credentials: true
-  }
+  },
+  allowEIO3: true
 });
 
 const userManager = new UserManager();
@@ -42,3 +42,6 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`listening on *:${PORT}`);
 });
+
+// Export for Vercel compatibility
+export default server;
