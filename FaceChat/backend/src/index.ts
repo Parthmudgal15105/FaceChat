@@ -10,11 +10,24 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*"
+    origin: process.env.NODE_ENV === 'production' 
+      ? ["https://your-frontend-url.vercel.app"] 
+      : ["http://localhost:5173", "http://localhost:5174"],
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
 const userManager = new UserManager();
+
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.json({ message: 'FaceChat Backend Server is running!' });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
 
 io.on('connection', (socket: Socket) => {
   console.log('a user connected');
@@ -25,6 +38,7 @@ io.on('connection', (socket: Socket) => {
   })
 });
 
-server.listen(3000, () => {
-    console.log('listening on *:3000');
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`listening on *:${PORT}`);
 });
