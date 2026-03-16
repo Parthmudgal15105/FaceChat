@@ -1,47 +1,54 @@
-import { Socket } from "socket.io";
 import http from "http";
-import express from 'express';
-import { Server } from 'socket.io';
+import express from "express";
+import { Server } from "socket.io";
 import { UserManager } from "./managers/UserManger";
+
+const DEFAULT_FRONTEND_URLS = ["http://localhost:5173", "http://localhost:5174"];
 
 const app = express();
 const server = http.createServer(app);
 
+const allowedOrigins = process.env.FRONTEND_URLS
+    ? process.env.FRONTEND_URLS.split(",").map((origin) => origin.trim()).filter(Boolean)
+    : DEFAULT_FRONTEND_URLS;
+
 const io = new Server(server, {
-  cors: {
-    origin: process.env.NODE_ENV === 'production' 
-      ? ["https://facechatfrontend.vercel.app"] 
-      : ["http://localhost:5173", "http://localhost:5174"],
-    methods: ["GET", "POST"],
-    credentials: true
-  },
-  allowEIO3: true
+    cors: {
+        origin: allowedOrigins,
+        methods: ["GET", "POST"],
+        credentials: true,
+    },
 });
 
 const userManager = new UserManager();
 
-// Health check endpoint
-app.get('/', (req, res) => {
-  res.json({ message: 'FaceChat Backend Server is running!' });
+app.get("/", (_req, res) => {
+    res.json({
+        name: "FaceChat signaling server",
+        status: "ok",
+        allowedOrigins,
+    });
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+app.get("/health", (_req, res) => {
+    res.json({
+        status: "ok",
+        timestamp: new Date().toISOString(),
+    });
 });
 
-io.on('connection', (socket: Socket) => {
-  console.log('a user connected');
-  userManager.addUser("randomName", socket);
-  socket.on("disconnect", () => {
-    console.log("user disconnected");
-    userManager.removeUser(socket.id);
-  })
+io.on("connection", (socket) => {
+    userManager.addUser(socket);
+
+    socket.on("disconnect", () => {
+        userManager.removeUser(socket.id);
+    });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT || 3000);
+
 server.listen(PORT, () => {
-    console.log(`listening on *:${PORT}`);
+    console.log(`FaceChat signaling server listening on port ${PORT}`);
 });
 
-// Export for Vercel compatibility
 export default server;
