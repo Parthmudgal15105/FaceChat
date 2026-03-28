@@ -21,7 +21,14 @@ interface Room {
 
 let GLOBAL_ROOM_ID = 1;
 
+/**
+ * ARCHITECTURE EXPLANATION:
+ * The RoomManager focuses strictly on the active 1-on-1 connections.
+ * It maps Room ID -> Both Users, handling the signaling relay (offer/answer/ice candidates).
+ * It decouples the WebRTC connection state from the Matchmaking logic (held in UserManager).
+ */
 export class RoomManager {
+    // A HashMap structure to quickly fetch O(1) any connected room
     private rooms: Map<string, Room>;
 
     constructor() {

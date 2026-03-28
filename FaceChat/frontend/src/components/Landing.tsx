@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Room } from "./Room";
 
+type RoomMode = "stranger" | "ai";
+
 const MAX_INTERESTS = 8;
 
 const featureCards = [
@@ -23,6 +25,7 @@ export const Landing = () => {
     const [interestInput, setInterestInput] = useState("");
     const [interests, setInterests] = useState<string[]>([]);
     const [joined, setJoined] = useState(false);
+    const [mode, setMode] = useState<RoomMode>("stranger");
     const [localStream, setLocalStream] = useState<MediaStream | null>(null);
     const [isPreparingMedia, setIsPreparingMedia] = useState(true);
     const [permissionError, setPermissionError] = useState<string | null>(null);
@@ -141,6 +144,16 @@ export const Landing = () => {
             return;
         }
 
+        setMode("stranger");
+        setJoined(true);
+    };
+
+    const startAiInterview = () => {
+        if (!localStream) {
+            return;
+        }
+
+        setMode("ai");
         setJoined(true);
     };
 
@@ -149,6 +162,7 @@ export const Landing = () => {
             <Room
                 interests={interests}
                 localStream={localStream}
+                mode={mode}
                 name={name.trim()}
                 onExit={() => setJoined(false)}
             />
@@ -298,6 +312,15 @@ export const Landing = () => {
                         type="button"
                     >
                         {isPreparingMedia ? "Preparing camera..." : "Start random video chat"}
+                    </button>
+
+                    <button
+                        className="secondary-button"
+                        disabled={!localStream || isPreparingMedia}
+                        onClick={startAiInterview}
+                        type="button"
+                    >
+                        {isPreparingMedia ? "Preparing camera..." : "Start AI mock interview"}
                     </button>
 
                     <p className="support-copy">

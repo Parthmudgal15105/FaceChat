@@ -33,11 +33,21 @@ type MatchFoundPayload = {
     partnerLabel: string;
 };
 
+type RoomMode = "stranger" | "ai";
+
+type EvaluationResult = {
+    technicalAccuracyScore: number;
+    timeComplexityAnalysis: string;
+    spaceComplexityAnalysis: string;
+    actionableFeedback: string;
+};
+
 type RoomProps = {
     name: string;
     interests: string[];
     localStream: MediaStream;
     onExit: () => void;
+    mode: RoomMode;
 };
 
 const createMessage = (author: ChatAuthor, text: string): ChatMessage => ({
@@ -58,16 +68,22 @@ const formatDuration = (seconds: number) => {
     return `${minutes}:${remainingSeconds}`;
 };
 
-export const Room = ({ name, interests, localStream, onExit }: RoomProps) => {
+export const Room = ({ name, interests, localStream, onExit, mode }: RoomProps) => {
     const displayName = name.trim() || "Anonymous";
 
-    const [phase, setPhase] = useState<Phase>("searching");
+    // In AI mode we skip the queue entirely, so the initial phase is already "connected".
+    const initialPhase: Phase = mode === "ai" ? "connected" : "searching";
+    const initialStatus = mode === "ai" ? "Ready for your AI interview." : "Looking for a stranger...";
+    const initialPartnerLabel = mode === "ai" ? "AI Interviewer" : "Stranger";
+    const initialMessages: ChatMessage[] = mode === "ai"
+        ? [createMessage("system", "Your AI interviewer is ready. Start speaking when you are set.")]
+        : [createMessage("system", "Joining the queue and warming up your connection.")];
+
+    const [phase, setPhase] = useState<Phase>(initialPhase);
     const [roomId, setRoomId] = useState<string | null>(null);
-    const [partnerLabel, setPartnerLabel] = useState("Stranger");
+    const [partnerLabel, setPartnerLabel] = useState(initialPartnerLabel);
     const [sharedInterests, setSharedInterests] = useState<string[]>([]);
-    const [messages, setMessages] = useState<ChatMessage[]>([
-        createMessage("system", "Joining the queue and warming up your connection."),
-    ]);
+    const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
     const [chatInput, setChatInput] = useState("");
     const [partnerTyping, setPartnerTyping] = useState(false);
     const [partnerMedia, setPartnerMedia] = useState<PartnerMediaState>({
@@ -78,10 +94,19 @@ export const Room = ({ name, interests, localStream, onExit }: RoomProps) => {
     const [videoEnabled, setVideoEnabled] = useState(localStream.getVideoTracks()[0]?.enabled ?? true);
     const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
     const [remoteVideoReady, setRemoteVideoReady] = useState(false);
-    const [statusMessage, setStatusMessage] = useState("Looking for a stranger...");
+    const [statusMessage, setStatusMessage] = useState(initialStatus);
     const [callStartedAt, setCallStartedAt] = useState<number | null>(null);
     const [elapsedSeconds, setElapsedSeconds] = useState(0);
     const [queueSize, setQueueSize] = useState(0);
+
+    // AI interview recording state
+    const [recorder, setRecorder] = useState<MediaRecorder | null>(null);
+    const [isRecording, setIsRecording] = useState(false);
+    const [isEvaluating, setIsEvaluating] = useState(false);
+    const [evaluation, setEvaluation] = useState<EvaluationResult | null>(null);
+
+    // Holds audio blobs as they stream in from the MediaRecorder.
+    const audioChunksRef = useRef<Blob[]>([]);
 
     const socketRef = useRef<Socket | null>(null);
     const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
@@ -161,7 +186,24 @@ export const Room = ({ name, interests, localStream, onExit }: RoomProps) => {
         };
     }, [callStartedAt]);
 
+    // AI mode: no socket or WebRTC needed. The initial state already reflects
+    // "connected" status. This effect is a no-op placeholder in case we need
+    // to kick off an AI session in a future phase.
     useEffect(() => {
+        if (mode !== "ai") {
+            return;
+        }
+
+        // Nothing to set up — phase and partnerLabel were already initialised
+        // correctly from the initial state derived from `mode` above.
+        setCallStartedAt(Date.now());
+    }, [mode]);
+
+    useEffect(() => {
+        if (mode !== "stranger") {
+            return;
+        }
+
         const socket = io(SIGNALING_SERVER_URL, {
             withCredentials: true,
             transports: ["websocket", "polling"],
@@ -459,7 +501,7 @@ export const Room = ({ name, interests, localStream, onExit }: RoomProps) => {
             socket.disconnect();
             socketRef.current = null;
         };
-    }, [displayName, interests, localStream]);
+    }, [displayName, interests, localStream, mode]);
 
     const sendTypingSignal = (isTyping: boolean) => {
         const activeSocket = socketRef.current;
@@ -562,6 +604,92 @@ export const Room = ({ name, interests, localStream, onExit }: RoomProps) => {
         });
     };
 
+    // Start recording the user's microphone for the AI interview.
+    const startInterview = () => {
+        const audioTrack = localStream.getAudioTracks()[0];
+
+        if (!audioTrack) {
+            console.error("No audio track found on localStream.");
+            return;
+        }
+
+        const audioOnlyStream = new MediaStream([audioTrack]);
+        const newRecorder = new MediaRecorder(audioOnlyStream);
+
+        audioChunksRef.current = [];
+
+        newRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+                audioChunksRef.current.push(event.data);
+            }
+        };
+
+        newRecorder.start(1000); // collect a chunk every 1 second
+        setRecorder(newRecorder);
+        setIsRecording(true);
+        setEvaluation(null);
+
+        setMessages((current) => [
+            ...current,
+            createMessage("system", "Recording started. Speak your answer now."),
+        ]);
+    };
+
+    // Stop recording, combine blobs, POST to /api/evaluate, and save the result.
+    const stopInterview = () => {
+        if (!recorder) {
+            return;
+        }
+
+        recorder.onstop = async () => {
+            setIsRecording(false);
+            setIsEvaluating(true);
+
+            setMessages((current) => [
+                ...current,
+                createMessage("system", "Recording stopped. Sending to AI for evaluation..."),
+            ]);
+
+            const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+            const formData = new FormData();
+            formData.append("audio", audioBlob, "interview.webm");
+
+            const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
+
+            try {
+                const response = await fetch(`${backendUrl}/api/evaluate`, {
+                    method: "POST",
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server returned status ${response.status}`);
+                }
+
+                const data = await response.json() as EvaluationResult;
+                setEvaluation(data);
+
+                setMessages((current) => [
+                    ...current,
+                    createMessage("system", "Evaluation complete. See the results in the sidebar."),
+                ]);
+            } catch (err) {
+                console.error("Error fetching evaluation:", err);
+
+                setMessages((current) => [
+                    ...current,
+                    createMessage("system", "Evaluation failed. Please try again."),
+                ]);
+            } finally {
+                setIsEvaluating(false);
+                audioChunksRef.current = [];
+            }
+        };
+
+        recorder.stop();
+        setRecorder(null);
+    };
+
     const handleLeave = () => {
         leavingRef.current = true;
         const activeSocket = socketRef.current;
@@ -641,9 +769,36 @@ export const Room = ({ name, interests, localStream, onExit }: RoomProps) => {
                     <button className="secondary-button" onClick={() => toggleLocalTrack("video")} type="button">
                         {videoEnabled ? "Hide camera" : "Show camera"}
                     </button>
-                    <button className="primary-button" onClick={handleNextStranger} type="button">
-                        Next stranger
-                    </button>
+
+                    {mode === "ai" && !isRecording && (
+                        <button
+                            className="primary-button"
+                            disabled={isEvaluating}
+                            id="start-interview-btn"
+                            onClick={startInterview}
+                            type="button"
+                        >
+                            {isEvaluating ? "Evaluating..." : "Start interview"}
+                        </button>
+                    )}
+
+                    {mode === "ai" && isRecording && (
+                        <button
+                            className="danger-button"
+                            id="stop-interview-btn"
+                            onClick={stopInterview}
+                            type="button"
+                        >
+                            Stop &amp; evaluate
+                        </button>
+                    )}
+
+                    {mode === "stranger" && (
+                        <button className="primary-button" onClick={handleNextStranger} type="button">
+                            Next stranger
+                        </button>
+                    )}
+
                     <button className="danger-button" onClick={handleLeave} type="button">
                         Leave
                     </button>
@@ -721,17 +876,77 @@ export const Room = ({ name, interests, localStream, onExit }: RoomProps) => {
                     </div>
                 </section>
 
-                <section className="sidebar-card">
-                    <div className="sidebar-card-header">
-                        <h2>Quick tips</h2>
-                        <span>Stay in control</span>
-                    </div>
-                    <ul className="tips-list">
-                        <li>Use interests to get closer matches before you hit the queue.</li>
-                        <li>Hit Next anytime to swap conversations without refreshing the app.</li>
-                        <li>Mute or hide your camera instantly if you need a quick reset.</li>
-                    </ul>
-                </section>
+                {mode === "stranger" && (
+                    <section className="sidebar-card">
+                        <div className="sidebar-card-header">
+                            <h2>Quick tips</h2>
+                            <span>Stay in control</span>
+                        </div>
+                        <ul className="tips-list">
+                            <li>Use interests to get closer matches before you hit the queue.</li>
+                            <li>Hit Next anytime to swap conversations without refreshing the app.</li>
+                            <li>Mute or hide your camera instantly if you need a quick reset.</li>
+                        </ul>
+                    </section>
+                )}
+
+                {mode === "ai" && (
+                    <section className="sidebar-card" id="evaluation-panel">
+                        <div className="sidebar-card-header">
+                            <h2>Evaluation</h2>
+                            <span>{isEvaluating ? "Analysing..." : isRecording ? "Recording" : "AI feedback"}</span>
+                        </div>
+
+                        {!evaluation && !isEvaluating && !isRecording && (
+                            <p className="eval-placeholder">
+                                Press <strong>Start interview</strong>, speak your answer, then press <strong>Stop &amp; evaluate</strong> to get feedback.
+                            </p>
+                        )}
+
+                        {isRecording && (
+                            <div className="eval-recording-indicator">
+                                <span className="eval-recording-dot" />
+                                Recording in progress
+                            </div>
+                        )}
+
+                        {isEvaluating && (
+                            <p className="eval-placeholder">Sending audio to Gemini for evaluation...</p>
+                        )}
+
+                        {evaluation && (
+                            <div className="eval-results">
+                                <div className="eval-score-block">
+                                    <span className="eval-score-label">Technical accuracy</span>
+                                    <div className="eval-score-bar-track">
+                                        <div
+                                            className="eval-score-bar-fill"
+                                            style={{ width: `${evaluation.technicalAccuracyScore}%` }}
+                                        />
+                                    </div>
+                                    <strong className="eval-score-number">
+                                        {evaluation.technicalAccuracyScore} / 100
+                                    </strong>
+                                </div>
+
+                                <div className="eval-field">
+                                    <span className="eval-field-label">Time complexity</span>
+                                    <p className="eval-field-value">{evaluation.timeComplexityAnalysis}</p>
+                                </div>
+
+                                <div className="eval-field">
+                                    <span className="eval-field-label">Space complexity</span>
+                                    <p className="eval-field-value">{evaluation.spaceComplexityAnalysis}</p>
+                                </div>
+
+                                <div className="eval-field eval-feedback">
+                                    <span className="eval-field-label">Actionable feedback</span>
+                                    <p className="eval-field-value">{evaluation.actionableFeedback}</p>
+                                </div>
+                            </div>
+                        )}
+                    </section>
+                )}
             </aside>
         </main>
     );
